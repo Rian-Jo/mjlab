@@ -329,7 +329,7 @@ def _get_entity_indices(
       return indexing.site_ids[asset_cfg.site_ids]
     case "actuator":
       assert indexing.ctrl_ids is not None
-      return indexing.ctrl_ids[asset_cfg.actuator_ids]
+      return indexing.ctrl_ids[asset_cfg.ctrl_ids]
     case _:
       raise ValueError(f"Unknown entity type: {spec.entity_type}")
 
@@ -477,7 +477,7 @@ def randomize_pd_gains(
     env_ids: Environment IDs to randomize. If None, randomizes all environments.
     kp_range: (min, max) for proportional gain randomization.
     kd_range: (min, max) for derivative gain randomization.
-    asset_cfg: Asset configuration specifying which entity and actuators.
+    asset_cfg: Asset configuration specifying which entity and ctrl actuators.
     distribution: Distribution type ("uniform" or "log_uniform").
     operation: "scale" multiplies existing gains, "abs" sets absolute values.
   """
@@ -494,13 +494,19 @@ def randomize_pd_gains(
   else:
     env_ids = env_ids.to(env.device, dtype=torch.int)
 
-  if isinstance(asset_cfg.actuator_ids, list):
-    actuators = [asset.actuators[i] for i in asset_cfg.actuator_ids]
+  if isinstance(asset_cfg.ctrl_ids, list):
+    target_ctrl_ids = set(asset_cfg.ctrl_ids)
   else:
-    actuators = asset.actuators[asset_cfg.actuator_ids]
+    target_ctrl_ids = set(range(asset.num_ctrls))
 
-  for actuator in actuators:
-    ctrl_ids = actuator.ctrl_ids
+  for actuator in asset.actuators:
+    actuator_ctrl_ids = actuator.ctrl_ids.tolist()
+    indices_to_randomize = [
+      i for i, ctrl_id in enumerate(actuator_ctrl_ids) if ctrl_id in target_ctrl_ids
+    ]
+    if not indices_to_randomize:
+      continue
+    ctrl_ids = actuator.ctrl_ids[indices_to_randomize]
 
     kp_samples = _sample_distribution(
       distribution,
@@ -531,18 +537,22 @@ def randomize_pd_gains(
       assert actuator.stiffness is not None
       assert actuator.damping is not None
       if operation == "scale":
-        current_kp = actuator.stiffness[env_ids].clone()
-        current_kd = actuator.damping[env_ids].clone()
-        actuator.set_gains(
-          env_ids, kp=current_kp * kp_samples, kd=current_kd * kd_samples
+        current_kp = actuator.stiffness[env_ids, indices_to_randomize].clone()
+        current_kd = actuator.damping[env_ids, indices_to_randomize].clone()
+        actuator.stiffness[env_ids[:, None], indices_to_randomize] = (
+          current_kp * kp_samples
+        )
+        actuator.damping[env_ids[:, None], indices_to_randomize] = (
+          current_kd * kd_samples
         )
       elif operation == "abs":
-        actuator.set_gains(env_ids, kp=kp_samples, kd=kd_samples)
+        actuator.stiffness[env_ids[:, None], indices_to_randomize] = kp_samples
+        actuator.damping[env_ids[:, None], indices_to_randomize] = kd_samples
 
     else:
       raise TypeError(
-        f"randomize_pd_gains only supports BuiltinPositionActuator, XmlPositionActuator, "
-        f"and IdealPdActuator, got {type(actuator).__name__}"
+        f"randomize_pd_gains only supports BuiltinPositionActuator, "
+        f"XmlPositionActuator and IdealPdActuator, got {type(actuator).__name__}"
       )
 
 
@@ -560,7 +570,7 @@ def randomize_effort_limits(
     env: The environment.
     env_ids: Environment IDs to randomize. If None, randomizes all environments.
     effort_limit_range: (min, max) for effort limit randomization.
-    asset_cfg: Asset configuration specifying which entity and actuators.
+    asset_cfg: Asset configuration specifying which entity and ctrl actuators.
     distribution: Distribution type ("uniform" or "log_uniform").
     operation: "scale" multiplies existing limits, "abs" sets absolute values.
   """
@@ -577,16 +587,19 @@ def randomize_effort_limits(
   else:
     env_ids = env_ids.to(env.device, dtype=torch.int)
 
-  if isinstance(asset_cfg.actuator_ids, list):
-    actuators = [asset.actuators[i] for i in asset_cfg.actuator_ids]
+  if isinstance(asset_cfg.ctrl_ids, list):
+    target_ctrl_ids = set(asset_cfg.ctrl_ids)
   else:
-    actuators = asset.actuators[asset_cfg.actuator_ids]
+    target_ctrl_ids = set(range(asset.num_ctrls))
 
-  if not isinstance(actuators, list):
-    actuators = [actuators]
-
-  for actuator in actuators:
-    ctrl_ids = actuator.ctrl_ids
+  for actuator in asset.actuators:
+    actuator_ctrl_ids = actuator.ctrl_ids.tolist()
+    indices_to_randomize = [
+      i for i, ctrl_id in enumerate(actuator_ctrl_ids) if ctrl_id in target_ctrl_ids
+    ]
+    if not indices_to_randomize:
+      continue
+    ctrl_ids = actuator.ctrl_ids[indices_to_randomize]
     num_actuators = len(ctrl_ids)
 
     effort_samples = _sample_distribution(
@@ -616,13 +629,15 @@ def randomize_effort_limits(
     elif isinstance(actuator, IdealPdActuator):
       assert actuator.force_limit is not None
       if operation == "scale":
-        current_limit = actuator.force_limit[env_ids].clone()
-        actuator.set_effort_limit(env_ids, effort_limit=current_limit * effort_samples)
+        current_limit = actuator.force_limit[env_ids, indices_to_randomize].clone()
+        actuator.force_limit[env_ids[:, None], indices_to_randomize] = (
+          current_limit * effort_samples
+        )
       elif operation == "abs":
-        actuator.set_effort_limit(env_ids, effort_limit=effort_samples)
+        actuator.force_limit[env_ids[:, None], indices_to_randomize] = effort_samples
 
     else:
       raise TypeError(
-        f"randomize_effort_limits only supports BuiltinPositionActuator, XmlPositionActuator, "
-        f"and IdealPdActuator, got {type(actuator).__name__}"
+        f"randomize_effort_limits only supports BuiltinPositionActuator, "
+        f"XmlPositionActuator and IdealPdActuator, got {type(actuator).__name__}"
       )

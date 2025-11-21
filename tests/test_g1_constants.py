@@ -118,7 +118,7 @@ def test_collision_geom_count(g1_model) -> None:
 
 
 def test_g1_entity_creation(g1_entity) -> None:
-  assert g1_entity.num_actuators == 29
+  assert g1_entity.num_ctrls == 29
   assert g1_entity.num_joints == 29
   assert g1_entity.is_actuated
   assert not g1_entity.is_fixed_base

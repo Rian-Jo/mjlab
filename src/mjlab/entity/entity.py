@@ -235,7 +235,7 @@ class Entity:
     return tuple(s.name.split("/")[-1] for s in self.spec.sites)
 
   @property
-  def actuator_names(self) -> tuple[str, ...]:
+  def ctrl_names(self) -> tuple[str, ...]:
     return tuple(a.name.split("/")[-1] for a in self.spec.actuators)
 
   @property
@@ -255,8 +255,8 @@ class Entity:
     return len(self.site_names)
 
   @property
-  def num_actuators(self) -> int:
-    return len(self.actuator_names)
+  def num_ctrls(self) -> int:
+    return len(self.ctrl_names)
 
   @property
   def root_body(self) -> mujoco.MjsBody:
@@ -279,19 +279,19 @@ class Entity:
       joint_subset = self.joint_names
     return resolve_matching_names(name_keys, joint_subset, preserve_order)
 
-  def find_actuators(
+  def find_ctrls(
     self,
     name_keys: str | Sequence[str],
-    actuator_subset: Sequence[str] | None = None,
+    ctrl_subset: Sequence[str] | None = None,
     preserve_order: bool = False,
   ) -> tuple[list[int], list[str]]:
-    if actuator_subset is None:
-      actuator_subset = self.actuator_names
-    return resolve_matching_names(name_keys, actuator_subset, preserve_order)
+    if ctrl_subset is None:
+      ctrl_subset = self.ctrl_names
+    return resolve_matching_names(name_keys, ctrl_subset, preserve_order)
 
-  def find_joints_by_actuator_names(
+  def find_joints_by_ctrl_names(
     self,
-    actuator_name_keys: str | Sequence[str],
+    ctrl_name_keys: str | Sequence[str],
   ) -> tuple[list[int], list[str]]:
     # Collect all actuated joint names.
     actuated_joint_names_set = set()
@@ -305,7 +305,7 @@ class Entity:
 
     # Find joints matching the pattern within actuated joints.
     _, matched_joint_names = self.find_joints(
-      actuator_name_keys, joint_subset=actuated_in_natural_order, preserve_order=False
+      ctrl_name_keys, joint_subset=actuated_in_natural_order, preserve_order=False
     )
 
     # Map joint names back to entity-local indices (indices into self.joint_names).

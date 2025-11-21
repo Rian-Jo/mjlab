@@ -89,7 +89,7 @@ def test_collision_geom_count(go1_model) -> None:
 
 def test_go1_entity_creation(go1_entity) -> None:
   """Test basic Go1 entity properties."""
-  assert go1_entity.num_actuators == 12
+  assert go1_entity.num_ctrls == 12
   assert go1_entity.num_joints == 12
   assert go1_entity.is_actuated
   assert not go1_entity.is_fixed_base
@@ -104,7 +104,7 @@ def test_go1_learned_actuator_network_exists() -> None:
 def test_go1_learned_entity_creation() -> None:
   """Test that Go1 with learned actuators can be created and compiled."""
   entity = Entity(go1_constants.get_go1_robot_cfg_learned())
-  assert entity.num_actuators == 12
+  assert entity.num_ctrls == 12
   assert entity.num_joints == 12
   assert entity.is_actuated
   assert not entity.is_fixed_base

@@ -23,9 +23,7 @@ class JointAction(ActionTerm):
   def __init__(self, cfg: actions_config.JointActionCfg, env: ManagerBasedRlEnv):
     super().__init__(cfg=cfg, env=env)
 
-    joint_ids, joint_names = self._asset.find_joints_by_actuator_names(
-      cfg.actuator_names
-    )
+    joint_ids, joint_names = self._asset.find_joints_by_ctrl_names(cfg.actuator_names)
     self._joint_ids = torch.tensor(joint_ids, device=self.device, dtype=torch.long)
     self._joint_names = joint_names
 

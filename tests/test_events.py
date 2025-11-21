@@ -127,6 +127,7 @@ def test_randomize_pd_gains(device):
   env.device = device
 
   mock_entity = Mock()
+  mock_entity.num_ctrls = 6
 
   builtin_actuator = Mock(spec=actuator.BuiltinPositionActuator)
   builtin_actuator.ctrl_ids = torch.tensor([0, 1], device=device)
@@ -246,6 +247,62 @@ def test_randomize_pd_gains(device):
   )
 
 
+def test_randomize_pd_gains_partial(device):
+  """Test PD gain randomization with partial joint selection.
+
+  This tests that when an Actuator controls multiple joints, we can randomize
+  only a subset of those joints.
+  """
+  env = Mock()
+  env.num_envs = 2
+  env.device = device
+
+  mock_entity = Mock()
+  mock_entity.num_ctrls = 5
+
+  ideal_actuator = Mock(spec=actuator.IdealPdActuator)
+  ideal_actuator.ctrl_ids = torch.tensor([0, 1, 2, 3, 4], device=device)
+  ideal_actuator.stiffness = torch.tensor(
+    [[100.0, 100.0, 100.0, 100.0, 100.0], [100.0, 100.0, 100.0, 100.0, 100.0]],
+    device=device,
+  )
+  ideal_actuator.damping = torch.tensor(
+    [[10.0, 10.0, 10.0, 10.0, 10.0], [10.0, 10.0, 10.0, 10.0, 10.0]], device=device
+  )
+
+  ideal_actuator.set_gains = actuator.IdealPdActuator.set_gains.__get__(ideal_actuator)
+
+  mock_entity.actuators = [ideal_actuator]
+  env.scene = {"robot": mock_entity}
+
+  # Randomize only joints 1, 2, 3 (not 0 and 4).
+  events.randomize_pd_gains(
+    env,
+    torch.tensor([0], device=device),
+    kp_range=(2.0, 2.0),  # 2x scale
+    kd_range=(3.0, 3.0),  # 3x scale
+    asset_cfg=SceneEntityCfg("robot", ctrl_ids=[1, 2, 3]),
+    distribution="uniform",
+    operation="scale",
+  )
+
+  # Check that only joints 1, 2, 3 were scaled.
+  assert torch.allclose(
+    ideal_actuator.stiffness[0],
+    torch.tensor([100.0, 200.0, 200.0, 200.0, 100.0], device=device),
+  )
+  assert torch.allclose(
+    ideal_actuator.damping[0],
+    torch.tensor([10.0, 30.0, 30.0, 30.0, 10.0], device=device),
+  )
+
+  # Check that env 1 was not affected.
+  assert torch.allclose(
+    ideal_actuator.stiffness[1],
+    torch.tensor([100.0, 100.0, 100.0, 100.0, 100.0], device=device),
+  )
+
+
 def test_randomize_effort_limits(device):
   """Test effort limit randomization."""
   env = Mock()
@@ -253,6 +310,7 @@ def test_randomize_effort_limits(device):
   env.device = device
 
   mock_entity = Mock()
+  mock_entity.num_ctrls = 6
 
   builtin_actuator = Mock(spec=actuator.BuiltinPositionActuator)
   builtin_actuator.ctrl_ids = torch.tensor([0, 1], device=device)
@@ -274,14 +332,14 @@ def test_randomize_effort_limits(device):
   env.sim = Mock()
   env.sim.model = Mock()
   env.sim.model.actuator_forcerange = torch.zeros((2, 6, 2), device=device)
-  env.sim.model.actuator_forcerange[:, :, 0] = -100.0  # Lower limit
-  env.sim.model.actuator_forcerange[:, :, 1] = 100.0  # Upper limit
+  env.sim.model.actuator_forcerange[:, :, 0] = -100.0
+  env.sim.model.actuator_forcerange[:, :, 1] = 100.0
 
   # Test scale operation.
   events.randomize_effort_limits(
     env,
     torch.tensor([0], device=device),
-    effort_limit_range=(2.0, 2.0),  # 2x scale
+    effort_limit_range=(2.0, 2.0),  # 2x scale.
     asset_cfg=SceneEntityCfg("robot"),
     distribution="uniform",
     operation="scale",
@@ -341,4 +399,53 @@ def test_randomize_effort_limits(device):
   assert torch.allclose(
     ideal_actuator.force_limit[1],
     torch.tensor([150.0, 150.0], device=device),
+  )
+
+
+def test_randomize_effort_limits_partial(device):
+  """Test effort limit randomization with partial joint selection.
+
+  This tests that when an Actuator controls multiple joints, we can randomize
+  only a subset of those joints.
+  """
+  env = Mock()
+  env.num_envs = 2
+  env.device = device
+
+  mock_entity = Mock()
+  mock_entity.num_ctrls = 5
+
+  ideal_actuator = Mock(spec=actuator.IdealPdActuator)
+  ideal_actuator.ctrl_ids = torch.tensor([0, 1, 2, 3, 4], device=device)
+  ideal_actuator.force_limit = torch.tensor(
+    [[50.0, 50.0, 50.0, 50.0, 50.0], [50.0, 50.0, 50.0, 50.0, 50.0]], device=device
+  )
+
+  ideal_actuator.set_effort_limit = actuator.IdealPdActuator.set_effort_limit.__get__(
+    ideal_actuator
+  )
+
+  mock_entity.actuators = [ideal_actuator]
+  env.scene = {"robot": mock_entity}
+
+  # Randomize only joints 1, 2, 3 (not 0 and 4).
+  events.randomize_effort_limits(
+    env,
+    torch.tensor([0], device=device),
+    effort_limit_range=(2.0, 2.0),  # 2x scale.
+    asset_cfg=SceneEntityCfg("robot", ctrl_ids=[1, 2, 3]),
+    distribution="uniform",
+    operation="scale",
+  )
+
+  # Check that only joints 1, 2, 3 were scaled.
+  assert torch.allclose(
+    ideal_actuator.force_limit[0],
+    torch.tensor([50.0, 100.0, 100.0, 100.0, 50.0], device=device),
+  )
+
+  # Check that env 1 was not affected.
+  assert torch.allclose(
+    ideal_actuator.force_limit[1],
+    torch.tensor([50.0, 50.0, 50.0, 50.0, 50.0], device=device),
   )

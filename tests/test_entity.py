@@ -199,7 +199,7 @@ def initialize_entity_with_sim(entity, device, num_envs=1):
         "is_actuated": False,
         "num_bodies": 1,
         "num_joints": 0,
-        "num_actuators": 0,
+        "num_ctrls": 0,
       },
     ),
     (
@@ -210,7 +210,7 @@ def initialize_entity_with_sim(entity, device, num_envs=1):
         "is_actuated": False,
         "num_bodies": 1,
         "num_joints": 0,
-        "num_actuators": 0,
+        "num_ctrls": 0,
       },
     ),
     (
@@ -221,7 +221,7 @@ def initialize_entity_with_sim(entity, device, num_envs=1):
         "is_actuated": True,
         "num_bodies": 3,
         "num_joints": 2,
-        "num_actuators": 2,
+        "num_ctrls": 2,
       },
     ),
     (
@@ -232,7 +232,7 @@ def initialize_entity_with_sim(entity, device, num_envs=1):
         "is_actuated": True,
         "num_bodies": 3,
         "num_joints": 2,
-        "num_actuators": 2,
+        "num_ctrls": 2,
       },
     ),
   ],
@@ -470,10 +470,10 @@ def test_fixed_base_mocap_runtime_pose_change(device):
   assert torch.allclose(entity.data.root_link_pose_w, new_pose, atol=1e-5)
 
 
-def test_find_joints_by_actuator_names_preserves_natural_order(device):
-  """Test that find_joints_by_actuator_names returns joints in natural joint order.
+def test_find_joints_by_ctrl_names_preserves_natural_order(device):
+  """Test that find_joints_by_ctrl_names returns joints in natural joint order.
 
-  This is a regression test for a bug where joints were returned in actuator
+  This is a regression test for a bug where joints were returned in ctrl
   definition order instead of natural joint order, breaking motion tracking tasks.
   """
   robot_cfg = EntityCfg(
@@ -489,16 +489,16 @@ def test_find_joints_by_actuator_names_preserves_natural_order(device):
   # Natural joint order should be: joint_a, joint_b, joint_c.
   assert list(robot.joint_names) == ["joint_a", "joint_b", "joint_c"]
 
-  # Actuator order is: act_c, act_b, act_a (reverse).
-  # But find_joints_by_actuator_names should still return joints in natural order.
-  joint_ids, joint_names = robot.find_joints_by_actuator_names(".*")
+  # Ctrl order is: act_c, act_b, act_a (reverse).
+  # But find_joints_by_ctrl_names should still return joints in natural order.
+  joint_ids, joint_names = robot.find_joints_by_ctrl_names(".*")
 
-  # Critical: joints must be in natural order, not actuator order.
+  # Critical: joints must be in natural order, not ctrl order.
   assert joint_names == ["joint_a", "joint_b", "joint_c"]
   assert joint_ids == [0, 1, 2]
 
-  # Verify this differs from actuator order (which is reverse).
-  assert list(robot.actuator_names) == ["act_c", "act_b", "act_a"]
+  # Verify this differs from ctrl order (which is reverse).
+  assert list(robot.ctrl_names) == ["act_c", "act_b", "act_a"]
 
 
 def test_ctrl_ids_follow_natural_joint_order(device):
@@ -525,8 +525,8 @@ def test_ctrl_ids_follow_natural_joint_order(device):
   # Natural joint order: joint_a, joint_b, joint_c.
   assert list(robot.joint_names) == ["joint_a", "joint_b", "joint_c"]
 
-  # Actuator definition order (from XML): act_c, act_b, act_a.
-  assert list(robot.actuator_names) == ["act_c", "act_b", "act_a"]
+  # Ctrl definition order (from XML): act_c, act_b, act_a.
+  assert list(robot.ctrl_names) == ["act_c", "act_b", "act_a"]
 
   # ctrl_ids should be in actuator definition order (c, b, a).
   ctrl_ids = robot.indexing.ctrl_ids.cpu().tolist()
@@ -545,8 +545,8 @@ def test_ctrl_ids_follow_natural_joint_order(device):
   assert ctrl_ids == expected_ctrl_ids
 
 
-def test_find_joints_by_actuator_names_returns_entity_local_indices():
-  """Test that find_joints_by_actuator_names returns entity-local indices."""
+def test_find_joints_by_ctrl_names_returns_entity_local_indices():
+  """Test that find_joints_by_ctrl_names returns entity-local indices."""
   robot_cfg = EntityCfg(
     spec_fn=lambda: mujoco.MjSpec.from_string(UNDERACTUATED_XML),
     articulation=EntityArticulationInfoCfg(
@@ -560,9 +560,73 @@ def test_find_joints_by_actuator_names_returns_entity_local_indices():
   # Natural joint order: joint_a (0), joint_b (1), joint_c (2).
   assert list(robot.joint_names) == ["joint_a", "joint_b", "joint_c"]
 
-  # Only joint_c has an actuator.
-  joint_ids, joint_names = robot.find_joints_by_actuator_names(".*")
+  # Only joint_c has a ctrl actuator.
+  joint_ids, joint_names = robot.find_joints_by_ctrl_names(".*")
 
   # Should return entity-local index [2], not subset-local [0].
   assert joint_names == ["joint_c"]
   assert joint_ids == [2]  # Index of joint_c in self.joint_names.
+
+
+def test_actuator_vs_ctrl_distinction():
+  """Test that demonstrates the clear distinction between Actuator and ctrl.
+
+  This test verifies the new ctrl_* API which clearly distinguishes:
+  - Actuator: High-level class that can control multiple joints
+  - ctrl: MuJoCo control actuators (1:1 with control inputs, always 1-DOF)
+  """
+  # Create a robot with 1 Actuator controlling 3 joints.
+  xml = """
+  <mujoco>
+    <worldbody>
+      <body name="base">
+        <geom type="box" size="0.1 0.1 0.1" mass="1.0"/>
+        <body name="link1" pos="0.2 0 0">
+          <joint name="joint1" type="hinge" axis="0 0 1"/>
+          <geom type="box" size="0.05 0.05 0.1" mass="0.5"/>
+          <body name="link2" pos="0.2 0 0">
+            <joint name="joint2" type="hinge" axis="0 0 1"/>
+            <geom type="box" size="0.05 0.05 0.1" mass="0.5"/>
+            <body name="link3" pos="0.2 0 0">
+              <joint name="joint3" type="hinge" axis="0 0 1"/>
+              <geom type="box" size="0.05 0.05 0.1" mass="0.5"/>
+            </body>
+          </body>
+        </body>
+      </body>
+    </worldbody>
+  </mujoco>
+  """
+
+  entity_cfg = EntityCfg(
+    spec_fn=lambda: mujoco.MjSpec.from_string(xml),
+    articulation=EntityArticulationInfoCfg(
+      actuators=(
+        BuiltinPositionActuatorCfg(
+          joint_names_expr=("joint1", "joint2", "joint3"),
+          effort_limit=10.0,
+          stiffness=100.0,
+          damping=10.0,
+        ),
+      )
+    ),
+  )
+  entity = Entity(entity_cfg)
+  model = entity.compile()
+
+  # High-level Actuator class: 1 instance controlling 3 joints.
+  assert len(entity.actuators) == 1
+  assert entity.actuators[0].joint_names == ["joint1", "joint2", "joint3"]
+
+  # MuJoCo control actuators: 3 ctrl actuators (1 per joint).
+  assert entity.num_ctrls == 3
+  assert entity.ctrl_names == ("joint1", "joint2", "joint3")
+
+  # Finding controls by name returns local ctrl IDs.
+  ctrl_ids, ctrl_names = entity.find_ctrls("joint.*")
+  assert ctrl_ids == [0, 1, 2]
+  assert ctrl_names == ["joint1", "joint2", "joint3"]
+
+  # These ctrl_ids can be used to index into MuJoCo arrays like actuator_force.
+  # (Model has nu=3 because there are 3 MuJoCo control actuators)
+  assert model.nu == 3
