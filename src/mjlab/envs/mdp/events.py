@@ -470,14 +470,18 @@ def randomize_pd_gains(
   distribution: Literal["uniform", "log_uniform"] = "uniform",
   operation: Literal["scale", "abs"] = "scale",
 ) -> None:
-  """Randomize PD stiffness and damping gains.
+  """Randomize PD stiffness and damping gains for specified joints.
+
+  Uses joint_names from asset_cfg to select which actuators to randomize.
+  Only supports actuators with PD gains (BuiltinPositionActuator,
+  XmlPositionActuator, IdealPdActuator).
 
   Args:
     env: The environment.
     env_ids: Environment IDs to randomize. If None, randomizes all environments.
     kp_range: (min, max) for proportional gain randomization.
     kd_range: (min, max) for derivative gain randomization.
-    asset_cfg: Asset configuration specifying which entity and actuators.
+    asset_cfg: Asset configuration with joint_names specifying which joints.
     distribution: Distribution type ("uniform" or "log_uniform").
     operation: "scale" multiplies existing gains, "abs" sets absolute values.
   """
@@ -494,50 +498,74 @@ def randomize_pd_gains(
   else:
     env_ids = env_ids.to(env.device, dtype=torch.int)
 
-  if isinstance(asset_cfg.actuator_ids, list):
-    actuators = [asset.actuators[i] for i in asset_cfg.actuator_ids]
-  else:
-    actuators = asset.actuators[asset_cfg.actuator_ids]
+  # Get ctrl_ids for selected joints using joint_names pattern.
+  joint_pattern = asset_cfg.joint_names if asset_cfg.joint_names is not None else ".*"
+  _, ctrl_ids = asset.resolve_actuated_joints(joint_pattern)
+  ctrl_ids_set = set(ctrl_ids.tolist())
 
-  for actuator in actuators:
-    ctrl_ids = actuator.ctrl_ids
+  for actuator in asset.actuator_groups:
+    # Find which of this actuator's ctrl_ids are in the selected set.
+    act_ctrl_ids = actuator.ctrl_ids.tolist()
+    selected_indices = [i for i, cid in enumerate(act_ctrl_ids) if cid in ctrl_ids_set]
+
+    if not selected_indices:
+      continue  # No overlap with selected joints.
+
+    selected_ctrl_ids = [act_ctrl_ids[i] for i in selected_indices]
 
     kp_samples = _sample_distribution(
       distribution,
       torch.tensor(kp_range[0], device=env.device),
       torch.tensor(kp_range[1], device=env.device),
-      (len(env_ids), len(ctrl_ids)),
+      (len(env_ids), len(selected_ctrl_ids)),
       env.device,
     )
     kd_samples = _sample_distribution(
       distribution,
       torch.tensor(kd_range[0], device=env.device),
       torch.tensor(kd_range[1], device=env.device),
-      (len(env_ids), len(ctrl_ids)),
+      (len(env_ids), len(selected_ctrl_ids)),
       env.device,
     )
 
     if isinstance(actuator, (BuiltinPositionActuator, XmlPositionActuator)):
       if operation == "scale":
-        env.sim.model.actuator_gainprm[env_ids[:, None], ctrl_ids, 0] *= kp_samples
-        env.sim.model.actuator_biasprm[env_ids[:, None], ctrl_ids, 1] *= kp_samples
-        env.sim.model.actuator_biasprm[env_ids[:, None], ctrl_ids, 2] *= kd_samples
+        env.sim.model.actuator_gainprm[env_ids[:, None], selected_ctrl_ids, 0] *= (
+          kp_samples
+        )
+        env.sim.model.actuator_biasprm[env_ids[:, None], selected_ctrl_ids, 1] *= (
+          kp_samples
+        )
+        env.sim.model.actuator_biasprm[env_ids[:, None], selected_ctrl_ids, 2] *= (
+          kd_samples
+        )
       elif operation == "abs":
-        env.sim.model.actuator_gainprm[env_ids[:, None], ctrl_ids, 0] = kp_samples
-        env.sim.model.actuator_biasprm[env_ids[:, None], ctrl_ids, 1] = -kp_samples
-        env.sim.model.actuator_biasprm[env_ids[:, None], ctrl_ids, 2] = -kd_samples
+        env.sim.model.actuator_gainprm[env_ids[:, None], selected_ctrl_ids, 0] = (
+          kp_samples
+        )
+        env.sim.model.actuator_biasprm[
+          env_ids[:, None], selected_ctrl_ids, 1
+        ] = -kp_samples
+        env.sim.model.actuator_biasprm[
+          env_ids[:, None], selected_ctrl_ids, 2
+        ] = -kd_samples
 
     elif isinstance(actuator, IdealPdActuator):
       assert actuator.stiffness is not None
       assert actuator.damping is not None
       if operation == "scale":
-        current_kp = actuator.stiffness[env_ids].clone()
-        current_kd = actuator.damping[env_ids].clone()
+        current_kp = actuator.stiffness[env_ids, selected_indices].clone()
+        current_kd = actuator.damping[env_ids, selected_indices].clone()
         actuator.set_gains(
-          env_ids, kp=current_kp * kp_samples, kd=current_kd * kd_samples
+          env_ids,
+          kp=current_kp * kp_samples,
+          kd=current_kd * kd_samples,
+          indices=selected_indices,
         )
       elif operation == "abs":
-        actuator.set_gains(env_ids, kp=kp_samples, kd=kd_samples)
+        actuator.set_gains(
+          env_ids, kp=kp_samples, kd=kd_samples, indices=selected_indices
+        )
 
     else:
       raise TypeError(
@@ -554,13 +582,17 @@ def randomize_effort_limits(
   distribution: Literal["uniform", "log_uniform"] = "uniform",
   operation: Literal["scale", "abs"] = "scale",
 ) -> None:
-  """Randomize actuator effort limits.
+  """Randomize actuator effort limits for specified joints.
+
+  Uses joint_names from asset_cfg to select which actuators to randomize.
+  Only supports actuators with effort limits (BuiltinPositionActuator,
+  XmlPositionActuator, IdealPdActuator).
 
   Args:
     env: The environment.
     env_ids: Environment IDs to randomize. If None, randomizes all environments.
     effort_limit_range: (min, max) for effort limit randomization.
-    asset_cfg: Asset configuration specifying which entity and actuators.
+    asset_cfg: Asset configuration with joint_names specifying which joints.
     distribution: Distribution type ("uniform" or "log_uniform").
     operation: "scale" multiplies existing limits, "abs" sets absolute values.
   """
@@ -577,49 +609,56 @@ def randomize_effort_limits(
   else:
     env_ids = env_ids.to(env.device, dtype=torch.int)
 
-  if isinstance(asset_cfg.actuator_ids, list):
-    actuators = [asset.actuators[i] for i in asset_cfg.actuator_ids]
-  else:
-    actuators = asset.actuators[asset_cfg.actuator_ids]
+  # Get ctrl_ids for selected joints using joint_names pattern.
+  joint_pattern = asset_cfg.joint_names if asset_cfg.joint_names is not None else ".*"
+  _, ctrl_ids = asset.resolve_actuated_joints(joint_pattern)
+  ctrl_ids_set = set(ctrl_ids.tolist())
 
-  if not isinstance(actuators, list):
-    actuators = [actuators]
+  for actuator in asset.actuator_groups:
+    # Find which of this actuator's ctrl_ids are in the selected set.
+    act_ctrl_ids = actuator.ctrl_ids.tolist()
+    selected_indices = [i for i, cid in enumerate(act_ctrl_ids) if cid in ctrl_ids_set]
 
-  for actuator in actuators:
-    ctrl_ids = actuator.ctrl_ids
-    num_actuators = len(ctrl_ids)
+    if not selected_indices:
+      continue  # No overlap with selected joints.
+
+    selected_ctrl_ids = [act_ctrl_ids[i] for i in selected_indices]
 
     effort_samples = _sample_distribution(
       distribution,
       torch.tensor(effort_limit_range[0], device=env.device),
       torch.tensor(effort_limit_range[1], device=env.device),
-      (len(env_ids), num_actuators),
+      (len(env_ids), len(selected_ctrl_ids)),
       env.device,
     )
 
     if isinstance(actuator, (BuiltinPositionActuator, XmlPositionActuator)):
       if operation == "scale":
-        env.sim.model.actuator_forcerange[env_ids[:, None], ctrl_ids, 0] *= (
+        env.sim.model.actuator_forcerange[env_ids[:, None], selected_ctrl_ids, 0] *= (
           effort_samples
         )
-        env.sim.model.actuator_forcerange[env_ids[:, None], ctrl_ids, 1] *= (
+        env.sim.model.actuator_forcerange[env_ids[:, None], selected_ctrl_ids, 1] *= (
           effort_samples
         )
       elif operation == "abs":
         env.sim.model.actuator_forcerange[
-          env_ids[:, None], ctrl_ids, 0
+          env_ids[:, None], selected_ctrl_ids, 0
         ] = -effort_samples
-        env.sim.model.actuator_forcerange[env_ids[:, None], ctrl_ids, 1] = (
+        env.sim.model.actuator_forcerange[env_ids[:, None], selected_ctrl_ids, 1] = (
           effort_samples
         )
 
     elif isinstance(actuator, IdealPdActuator):
       assert actuator.force_limit is not None
       if operation == "scale":
-        current_limit = actuator.force_limit[env_ids].clone()
-        actuator.set_effort_limit(env_ids, effort_limit=current_limit * effort_samples)
+        current_limit = actuator.force_limit[env_ids, selected_indices].clone()
+        actuator.set_effort_limit(
+          env_ids, effort_limit=current_limit * effort_samples, indices=selected_indices
+        )
       elif operation == "abs":
-        actuator.set_effort_limit(env_ids, effort_limit=effort_samples)
+        actuator.set_effort_limit(
+          env_ids, effort_limit=effort_samples, indices=selected_indices
+        )
 
     else:
       raise TypeError(

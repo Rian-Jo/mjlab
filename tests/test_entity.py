@@ -470,42 +470,12 @@ def test_fixed_base_mocap_runtime_pose_change(device):
   assert torch.allclose(entity.data.root_link_pose_w, new_pose, atol=1e-5)
 
 
-def test_find_joints_by_actuator_names_preserves_natural_order(device):
-  """Test that find_joints_by_actuator_names returns joints in natural joint order.
+def test_actuator_vs_joint_ordering(device):
+  """Test that joint order and actuator order are handled correctly.
 
-  This is a regression test for a bug where joints were returned in actuator
-  definition order instead of natural joint order, breaking motion tracking tasks.
-  """
-  robot_cfg = EntityCfg(
-    spec_fn=lambda: mujoco.MjSpec.from_string(ACTUATOR_ORDER_TEST_XML),
-    articulation=EntityArticulationInfoCfg(
-      actuators=(XmlMotorActuatorCfg(joint_names_expr=(".*",)),)
-    ),
-  )
-
-  robot = Entity(robot_cfg)
-  robot.compile()
-
-  # Natural joint order should be: joint_a, joint_b, joint_c.
-  assert list(robot.joint_names) == ["joint_a", "joint_b", "joint_c"]
-
-  # Actuator order is: act_c, act_b, act_a (reverse).
-  # But find_joints_by_actuator_names should still return joints in natural order.
-  joint_ids, joint_names = robot.find_joints_by_actuator_names(".*")
-
-  # Critical: joints must be in natural order, not actuator order.
-  assert joint_names == ["joint_a", "joint_b", "joint_c"]
-  assert joint_ids == [0, 1, 2]
-
-  # Verify this differs from actuator order (which is reverse).
-  assert list(robot.actuator_names) == ["act_c", "act_b", "act_a"]
-
-
-def test_ctrl_ids_follow_natural_joint_order(device):
-  """Test that entity.indexing.ctrl_ids are in actuator definition order.
-
-  ctrl_ids follow actuator definition order for simplicity. ONNX export builds
-  the natural joint order mapping where needed.
+  Regression test for bugs where:
+  1. resolve_actuated_joints returned joints in actuator order instead of natural order
+  2. ctrl_ids didn't match actuator definition order
   """
   robot_cfg = EntityCfg(
     spec_fn=lambda: mujoco.MjSpec.from_string(ACTUATOR_ORDER_TEST_XML),
@@ -517,36 +487,34 @@ def test_ctrl_ids_follow_natural_joint_order(device):
   robot = Entity(robot_cfg)
   mj_model = robot.compile()
 
-  # Create simulation to initialize entity.
   sim_cfg = SimulationCfg()
   sim = Simulation(num_envs=1, cfg=sim_cfg, model=mj_model, device=device)
   robot.initialize(sim.mj_model, sim.model, sim.data, device)
 
-  # Natural joint order: joint_a, joint_b, joint_c.
+  # Natural joint order: joint_a, joint_b, joint_c (kinematic tree order).
   assert list(robot.joint_names) == ["joint_a", "joint_b", "joint_c"]
 
-  # Actuator definition order (from XML): act_c, act_b, act_a.
+  # Actuator definition order (from XML): act_c, act_b, act_a (reverse).
   assert list(robot.actuator_names) == ["act_c", "act_b", "act_a"]
 
-  # ctrl_ids should be in actuator definition order (c, b, a).
-  ctrl_ids = robot.indexing.ctrl_ids.cpu().tolist()
+  # resolve_actuated_joints must return joints in natural order.
+  joint_ids, ctrl_ids = robot.resolve_actuated_joints(".*")
+  assert joint_ids.tolist() == [0, 1, 2]
 
-  # Map actuator names to their MuJoCo IDs in the compiled model.
+  # ctrl_ids must match actuator definition order.
   actuator_name_to_id = {
     mj_model.actuator(i).name.split("/")[-1]: i for i in range(mj_model.nu)
   }
-
-  # ctrl_ids should be ordered as: act_c, act_b, act_a (actuator definition order).
   expected_ctrl_ids = [
     actuator_name_to_id["act_c"],
     actuator_name_to_id["act_b"],
     actuator_name_to_id["act_a"],
   ]
-  assert ctrl_ids == expected_ctrl_ids
+  assert robot.indexing.ctrl_ids.cpu().tolist() == expected_ctrl_ids
 
 
-def test_find_joints_by_actuator_names_returns_entity_local_indices():
-  """Test that find_joints_by_actuator_names returns entity-local indices."""
+def test_resolve_actuated_joints_returns_entity_local_indices(device):
+  """Test that resolve_actuated_joints returns entity-local indices."""
   robot_cfg = EntityCfg(
     spec_fn=lambda: mujoco.MjSpec.from_string(UNDERACTUATED_XML),
     articulation=EntityArticulationInfoCfg(
@@ -555,14 +523,17 @@ def test_find_joints_by_actuator_names_returns_entity_local_indices():
   )
 
   robot = Entity(robot_cfg)
-  robot.compile()
+  mj_model = robot.compile()
+
+  sim_cfg = SimulationCfg()
+  sim = Simulation(num_envs=1, cfg=sim_cfg, model=mj_model, device=device)
+  robot.initialize(sim.mj_model, sim.model, sim.data, device)
 
   # Natural joint order: joint_a (0), joint_b (1), joint_c (2).
   assert list(robot.joint_names) == ["joint_a", "joint_b", "joint_c"]
 
   # Only joint_c has an actuator.
-  joint_ids, joint_names = robot.find_joints_by_actuator_names(".*")
+  joint_ids, ctrl_ids = robot.resolve_actuated_joints(".*")
 
   # Should return entity-local index [2], not subset-local [0].
-  assert joint_names == ["joint_c"]
-  assert joint_ids == [2]  # Index of joint_c in self.joint_names.
+  assert joint_ids.tolist() == [2]  # Index of joint_c in self.joint_names.

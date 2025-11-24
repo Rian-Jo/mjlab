@@ -34,14 +34,9 @@ def get_base_metadata(
   robot: Entity = env.scene["robot"]
   joint_action = env.action_manager.get_term("joint_pos")
   assert isinstance(joint_action, JointAction)
-  # Build mapping from joint name to actuator ID for natural joint order.
-  # Each spec actuator controls exactly one joint (via its target field).
-  joint_name_to_ctrl_id = {}
-  for actuator in robot.spec.actuators:
-    joint_name = actuator.target.split("/")[-1]
-    joint_name_to_ctrl_id[joint_name] = actuator.id
-  # Get actuator IDs in natural joint order (same order as robot.joint_names).
-  ctrl_ids_natural = [joint_name_to_ctrl_id[jname] for jname in robot.joint_names]
+
+  # Get ctrl_ids in natural joint order using the joint_to_ctrl mapping.
+  ctrl_ids_natural = robot.indexing.joint_to_ctrl.cpu().tolist()
   joint_stiffness = env.sim.mj_model.actuator_gainprm[ctrl_ids_natural, 0]
   joint_damping = -env.sim.mj_model.actuator_biasprm[ctrl_ids_natural, 2]
   return {

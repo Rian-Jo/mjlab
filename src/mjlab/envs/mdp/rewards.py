@@ -110,18 +110,15 @@ class electrical_power_cost:
   def __init__(self, cfg: RewardTermCfg, env: ManagerBasedRlEnv):
     asset: Entity = env.scene[cfg.params["asset_cfg"].name]
 
-    joint_ids, _ = asset.find_joints(
+    # Get aligned joint_ids and ctrl_ids for power calculation.
+    self._joint_ids, self._ctrl_ids = asset.resolve_actuated_joints(
       cfg.params["asset_cfg"].joint_names,
     )
-    actuator_ids, _ = asset.find_actuators(
-      cfg.params["asset_cfg"].joint_names,
-    )
-    self._joint_ids = torch.tensor(joint_ids, device=env.device, dtype=torch.long)
-    self._actuator_ids = torch.tensor(actuator_ids, device=env.device, dtype=torch.long)
 
   def __call__(self, env: ManagerBasedRlEnv, asset_cfg: SceneEntityCfg) -> torch.Tensor:
     asset: Entity = env.scene[asset_cfg.name]
-    tau = asset.data.actuator_force[:, self._actuator_ids]
+    # ctrl_ids and joint_ids are guaranteed to be aligned.
+    tau = asset.data.actuator_force[:, self._ctrl_ids]
     qd = asset.data.joint_vel[:, self._joint_ids]
     mech = tau * qd
     mech_pos = torch.clamp(mech, min=0.0)  # Don't penalize regen.

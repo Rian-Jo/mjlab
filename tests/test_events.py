@@ -143,7 +143,11 @@ def test_randomize_pd_gains(device):
 
   ideal_actuator.set_gains = actuator.IdealPdActuator.set_gains.__get__(ideal_actuator)
 
-  mock_entity.actuators = [builtin_actuator, xml_actuator, ideal_actuator]
+  mock_entity.actuator_groups = [builtin_actuator, xml_actuator, ideal_actuator]
+  mock_entity.resolve_actuated_joints = lambda pattern: (
+    torch.tensor(list(range(6)), dtype=torch.long, device=device),  # joint_ids
+    torch.tensor(list(range(6)), dtype=torch.long, device=device),  # ctrl_ids
+  )
   env.scene = {"robot": mock_entity}
 
   env.sim = Mock()
@@ -268,7 +272,11 @@ def test_randomize_effort_limits(device):
     ideal_actuator
   )
 
-  mock_entity.actuators = [builtin_actuator, xml_actuator, ideal_actuator]
+  mock_entity.actuator_groups = [builtin_actuator, xml_actuator, ideal_actuator]
+  mock_entity.resolve_actuated_joints = lambda pattern: (
+    torch.tensor(list(range(6)), dtype=torch.long, device=device),  # joint_ids
+    torch.tensor(list(range(6)), dtype=torch.long, device=device),  # ctrl_ids
+  )
   env.scene = {"robot": mock_entity}
 
   env.sim = Mock()

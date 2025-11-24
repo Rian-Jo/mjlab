@@ -23,14 +23,12 @@ class JointAction(ActionTerm):
   def __init__(self, cfg: actions_config.JointActionCfg, env: ManagerBasedRlEnv):
     super().__init__(cfg=cfg, env=env)
 
-    joint_ids, joint_names = self._asset.find_joints_by_actuator_names(
-      cfg.actuator_names
-    )
-    self._joint_ids = torch.tensor(joint_ids, device=self.device, dtype=torch.long)
-    self._joint_names = joint_names
+    # Get joint_ids for actuated joints matching the pattern.
+    self._joint_ids, _ = self._asset.resolve_actuated_joints(cfg.actuator_names)
+    self._joint_names = [self._asset.joint_names[i] for i in self._joint_ids.tolist()]
 
-    self._num_joints = len(joint_ids)
-    self._action_dim = len(joint_ids)
+    self._num_joints = len(self._joint_ids)
+    self._action_dim = len(self._joint_ids)
 
     self._raw_actions = torch.zeros(self.num_envs, self.action_dim, device=self.device)
     self._processed_actions = torch.zeros_like(self._raw_actions)

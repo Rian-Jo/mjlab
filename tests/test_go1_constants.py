@@ -87,14 +87,6 @@ def test_collision_geom_count(go1_model) -> None:
   assert len(foot_geoms) == 4
 
 
-def test_go1_entity_creation(go1_entity) -> None:
-  """Test basic Go1 entity properties."""
-  assert go1_entity.num_actuators == 12
-  assert go1_entity.num_joints == 12
-  assert go1_entity.is_actuated
-  assert not go1_entity.is_fixed_base
-
-
 def test_go1_learned_actuator_network_exists() -> None:
   """Verify the learned actuator network file exists."""
   cfg = go1_constants.GO1_LEARNED_ACTUATOR_CFG

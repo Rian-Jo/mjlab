@@ -165,7 +165,7 @@ def test_delayed_actuator_reset(device):
   entity.reset(torch.tensor([0], device=device))
 
   # Check that delay buffer was reset for env 0.
-  actuator = entity.actuators[0]
+  actuator = entity.actuator_groups[0]
   assert isinstance(actuator, DelayedActuator)
   assert len(actuator._delay_buffers) > 0
   delay_buffer = next(iter(actuator._delay_buffers.values()))
@@ -199,7 +199,7 @@ def test_delayed_actuator_multi_target(device):
   sim = Simulation(num_envs=1, cfg=sim_cfg, model=model, device=device)
   entity.initialize(model, sim.model, sim.data, device)
 
-  actuator = entity.actuators[0]
+  actuator = entity.actuator_groups[0]
   assert isinstance(actuator, DelayedActuator)
   # Should have 3 delay buffers (one for each target).
   assert len(actuator._delay_buffers) == 3

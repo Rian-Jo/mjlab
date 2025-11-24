@@ -140,7 +140,7 @@ def test_learned_mlp_network_loads(device, identity_network_file):
   entity, sim = initialize_entity(entity, device)
 
   # Verify network was loaded.
-  actuator = entity.actuators[0]
+  actuator = entity.actuator_groups[0]
   assert isinstance(actuator, LearnedMlpActuator)
   assert actuator.network is not None
   assert actuator._pos_error_history is not None
@@ -333,7 +333,7 @@ def test_learned_mlp_reset_clears_history(device, identity_network_file):
   entity.reset(torch.tensor([0], device=device))
 
   # Check history buffers.
-  actuator = entity.actuators[0]
+  actuator = entity.actuator_groups[0]
   assert isinstance(actuator, LearnedMlpActuator)
   assert actuator._pos_error_history is not None
   assert actuator._vel_history is not None

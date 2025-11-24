@@ -27,7 +27,7 @@ class EntityIndexing:
   joints: tuple[mujoco.MjsJoint, ...]
   geoms: tuple[mujoco.MjsGeom, ...]
   sites: tuple[mujoco.MjsSite, ...]
-  actuators: tuple[mujoco.MjsActuator, ...] | None
+  mj_actuators: tuple[mujoco.MjsActuator, ...] | None
 
   # Indices.
   body_ids: torch.Tensor
@@ -36,6 +36,10 @@ class EntityIndexing:
   ctrl_ids: torch.Tensor
   joint_ids: torch.Tensor
   mocap_id: int | None
+
+  # Mapping from joint index to ctrl index. Shape (num_joints,).
+  # Value is the ctrl index for actuated joints, or -1 for unactuated joints.
+  joint_to_ctrl: torch.Tensor
 
   # Addresses.
   joint_q_adr: torch.Tensor
@@ -215,7 +219,13 @@ class Entity:
     return self._data
 
   @property
-  def actuators(self) -> list[actuator.Actuator]:
+  def actuator_groups(self) -> list[actuator.Actuator]:
+    """High-level actuator groups (mjlab Actuator objects).
+
+    Each actuator group may control multiple joints and creates one MuJoCo
+    actuator per joint. Use actuator_names for the underlying MuJoCo
+    actuator names (which map 1:1 with ctrl indices).
+    """
     return self._actuators
 
   @property
@@ -236,6 +246,12 @@ class Entity:
 
   @property
   def actuator_names(self) -> tuple[str, ...]:
+    """Names of MuJoCo actuators (1:1 with ctrl indices).
+
+    These are the names of the underlying MuJoCo actuators in the spec,
+    not the mjlab actuator_groups. For built-in actuators created by mjlab,
+    the actuator name equals the joint name it controls.
+    """
     return tuple(a.name.split("/")[-1] for a in self.spec.actuators)
 
   @property
@@ -256,6 +272,7 @@ class Entity:
 
   @property
   def num_actuators(self) -> int:
+    """Number of MuJoCo actuators (1:1 with ctrl indices)."""
     return len(self.actuator_names)
 
   @property
@@ -285,33 +302,80 @@ class Entity:
     actuator_subset: Sequence[str] | None = None,
     preserve_order: bool = False,
   ) -> tuple[list[int], list[str]]:
+    """Find actuators by name pattern.
+
+    Args:
+      name_keys: Name pattern(s) to match against actuator names.
+      actuator_subset: Optional subset of actuator names to search within.
+      preserve_order: If True, preserve order of name_keys in results.
+
+    Returns:
+      Tuple of (ids, names) where ids are indices into the ctrl array.
+    """
     if actuator_subset is None:
       actuator_subset = self.actuator_names
     return resolve_matching_names(name_keys, actuator_subset, preserve_order)
 
-  def find_joints_by_actuator_names(
+  def resolve_actuated_joints(
     self,
-    actuator_name_keys: str | Sequence[str],
-  ) -> tuple[list[int], list[str]]:
+    name_keys: str | Sequence[str],
+  ) -> tuple[torch.Tensor, torch.Tensor]:
+    """Get aligned (joint_ids, ctrl_ids) for actuated joints matching pattern.
+
+    Returns tensors that are aligned: ctrl_ids[i] is the control index for
+    joint_ids[i]. Only returns joints that have actuators.
+
+    Args:
+      name_keys: Name pattern(s) to match against joint names.
+
+    Returns:
+      Tuple of (joint_ids, ctrl_ids) where:
+        - joint_ids: Indices for indexing joint_pos, joint_vel, etc.
+        - ctrl_ids: Aligned indices for indexing actuator_force, ctrl, etc.
+
+    Raises:
+      RuntimeError: If entity is not initialized.
+      ValueError: If a matched joint has no actuator.
+    """
+    if not hasattr(self, "indexing"):
+      raise RuntimeError(
+        "resolve_actuated_joints requires entity to be initialized. "
+        "Call entity.initialize() first."
+      )
+
     # Collect all actuated joint names.
     actuated_joint_names_set = set()
     for act in self._actuators:
       actuated_joint_names_set.update(act.joint_names)
 
-    # Filter self.joint_names to only actuated joints, preserving natural order.
+    # Filter to only actuated joints, preserving natural order.
     actuated_in_natural_order = [
       name for name in self.joint_names if name in actuated_joint_names_set
     ]
 
     # Find joints matching the pattern within actuated joints.
     _, matched_joint_names = self.find_joints(
-      actuator_name_keys, joint_subset=actuated_in_natural_order, preserve_order=False
+      name_keys, joint_subset=actuated_in_natural_order, preserve_order=False
     )
 
-    # Map joint names back to entity-local indices (indices into self.joint_names).
+    # Map joint names back to entity-local indices.
     name_to_entity_idx = {name: i for i, name in enumerate(self.joint_names)}
     joint_ids = [name_to_entity_idx[name] for name in matched_joint_names]
-    return joint_ids, matched_joint_names
+
+    # Get ctrl_ids from the joint_to_ctrl mapping.
+    joint_to_ctrl = self.indexing.joint_to_ctrl
+    ctrl_ids = [int(joint_to_ctrl[jid].item()) for jid in joint_ids]
+
+    # Validate all joints have actuators.
+    for jid, cid, jname in zip(joint_ids, ctrl_ids, matched_joint_names, strict=True):
+      if cid < 0:
+        raise ValueError(f"Joint '{jname}' (id={jid}) has no actuator.")
+
+    device = self.indexing.joint_to_ctrl.device
+    return (
+      torch.tensor(joint_ids, dtype=torch.long, device=device),
+      torch.tensor(ctrl_ids, dtype=torch.long, device=device),
+    )
 
   def find_geoms(
     self,
@@ -694,11 +758,29 @@ class Entity:
     joint_ids = torch.tensor([j.id for j in joints], dtype=torch.int, device=device)
 
     if self.is_actuated:
-      actuators = tuple(self.spec.actuators)
-      ctrl_ids = torch.tensor([a.id for a in actuators], dtype=torch.int, device=device)
+      mj_actuators = tuple(self.spec.actuators)
+      ctrl_ids = torch.tensor(
+        [a.id for a in mj_actuators], dtype=torch.int, device=device
+      )
+
+      # Build joint_to_ctrl mapping: for each joint, find its ctrl index.
+      # MuJoCo actuators have a 'target' field that is the joint name.
+      joint_name_to_ctrl_id: dict[str, int] = {}
+      for mj_act in mj_actuators:
+        joint_name = mj_act.target.split("/")[-1]
+        joint_name_to_ctrl_id[joint_name] = mj_act.id
+
+      # Create mapping tensor: -1 for unactuated joints.
+      joint_to_ctrl_list = [
+        joint_name_to_ctrl_id.get(jname, -1) for jname in self.joint_names
+      ]
+      joint_to_ctrl = torch.tensor(joint_to_ctrl_list, dtype=torch.int, device=device)
     else:
-      actuators = None
+      mj_actuators = None
       ctrl_ids = torch.empty(0, dtype=torch.int, device=device)
+      joint_to_ctrl = torch.full(
+        (len(self.joint_names),), -1, dtype=torch.int, device=device
+      )
 
     joint_q_adr = []
     joint_v_adr = []
@@ -730,13 +812,14 @@ class Entity:
       joints=joints,
       geoms=geoms,
       sites=sites,
-      actuators=actuators,
+      mj_actuators=mj_actuators,
       body_ids=body_ids,
       geom_ids=geom_ids,
       site_ids=site_ids,
       ctrl_ids=ctrl_ids,
       joint_ids=joint_ids,
       mocap_id=mocap_id,
+      joint_to_ctrl=joint_to_ctrl,
       joint_q_adr=joint_q_adr,
       joint_v_adr=joint_v_adr,
       free_joint_q_adr=free_joint_q_adr,
