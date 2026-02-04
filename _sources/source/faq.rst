@@ -81,7 +81,7 @@ My training crashes with NaN errors
       from dataclasses import dataclass, field
 
       from mjlab.envs.mdp.terminations import nan_detection
-      from mjlab.managers.manager_term_config import TerminationTermCfg
+      from mjlab.managers.termination_manager import TerminationTermCfg
 
       @dataclass
       class TerminationCfg:
@@ -241,6 +241,6 @@ If something isn't working or if we've missed something, please
 
 .. important::
 
-   mjlab is in **beta**. Breaking changes, missing features, and rough edges
-   are expected. Feedback and contributions are very welcome — they directly
-   shape the stable release.
+   mjlab has reached v1.0.0! While we strive for stability, please note that
+   MuJoCo Warp (our physics backend) is still in beta. Feedback and
+   contributions are very welcome.
